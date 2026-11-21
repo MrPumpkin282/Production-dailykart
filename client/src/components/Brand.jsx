@@ -31,8 +31,9 @@ export function Mascot({ className = 'h-56' }) {
 /** The mascot inside the arch frame used on the login screens. */
 export function ArchMascot() {
   return (
-    <div className="relative mx-auto flex h-72 w-56 items-end justify-center overflow-hidden rounded-t-full border-2 border-white/80 bg-saffron-300/40">
-      <Mascot className="h-64" />
+    // Grows with the screen height (up to 32rem) so the slogan below stays in view.
+    <div className="relative mx-auto flex aspect-[7/9] h-[min(32rem,50vh)] min-h-72 items-end justify-center overflow-hidden rounded-t-full border-2 border-white/80 bg-saffron-300/40">
+      <Mascot className="h-[92%]" />
     </div>
   );
 }

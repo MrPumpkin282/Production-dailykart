@@ -1,11 +1,13 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { query } from './db.js';
 import { config } from './config.js';
 import { signToken, requireAuth, HttpError, wrap } from './auth.js';
 import { publish, TOPICS } from './kafka.js';
-import { searchProducts, os } from './search.js';
+import { searchProducts, os, syncProduct } from './search.js';
 import { kafkaStatus } from './status.js';
+import { reserveWindow, readHours } from './hours.js';
+import { transcribe, parseStock, voiceTooMany, MAX_BYTES } from './voice.js';
 import {
   createFreeze, cancelFreeze, collectFreeze, freezesForUser, freezesForShop,
 } from './freezes.js';
@@ -104,10 +106,24 @@ r.get('/health', wrap(async (req, res) => {
   res.json(out);
 }));
 
-/** Last events handled by Kafka consumers, for the live demo panel. */
-r.get('/events', wrap(async (req, res) => {
+/**
+ * The shop's live activity: the last events Kafka consumers handled for this
+ * shopkeeper's own shop only (reservations, pickups, stock changes).
+ * Stock events also carry the product names, for a readable feed.
+ */
+r.get('/events', requireAuth('shopkeeper'), wrap(async (req, res) => {
+  const shop = await myShop(req.user.id);
   const { rows } = await query(
-    `SELECT id, topic, event_type, consumer, result, payload, processed_at FROM event_log ORDER BY id DESC LIMIT 25`
+    `SELECT e.id, e.topic, e.event_type, e.consumer, e.result, e.payload, e.processed_at,
+            (SELECT array_agg(p.name ORDER BY p.name) FROM products p
+              WHERE p.id::text IN (SELECT jsonb_array_elements_text(e.payload->'productIds'))) AS product_names
+     FROM event_log e
+     WHERE e.payload->>'shopId' = ($1::int)::text
+        OR EXISTS (SELECT 1 FROM products p
+                   WHERE p.shop_id = $1::int
+                     AND p.id::text IN (SELECT jsonb_array_elements_text(e.payload->'productIds')))
+     ORDER BY e.id DESC LIMIT 40`,
+    [shop.id]
   );
   res.json(rows);
 }));
@@ -136,6 +152,7 @@ r.post('/auth/register', wrap(async (req, res) => {
   if (role === 'shopkeeper') {
     if (!shop?.name?.trim() || !shop?.address?.trim() || !shop?.city?.trim()) throw new HttpError(400, 'Shop name, address and city are required');
     if (num(shop.lat) == null || num(shop.lng) == null) throw new HttpError(400, 'Set your shop location');
+    Object.assign(shop, readHours(shop)); // defaults to 07:00-22:00 when not sent
   }
 
   const hash = await bcrypt.hash(password, 10);
@@ -152,8 +169,8 @@ r.post('/auth/register', wrap(async (req, res) => {
   }
   if (role === 'shopkeeper') {
     await query(
-      `INSERT INTO shops (owner_id, name, address, city, lat, lng) VALUES ($1, $2, $3, $4, $5, $6)`,
-      [user.id, shop.name.trim(), shop.address.trim(), shop.city.trim(), num(shop.lat), num(shop.lng)]
+      `INSERT INTO shops (owner_id, name, address, city, lat, lng, opens_at, closes_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [user.id, shop.name.trim(), shop.address.trim(), shop.city.trim(), num(shop.lat), num(shop.lng), shop.opens_at, shop.closes_at]
     );
   }
   res.status(201).json({ token: signToken(user), user });
@@ -185,7 +202,7 @@ r.get('/shops/nearby', wrap(async (req, res) => {
      WHERE distance_m <= $3 ORDER BY distance_m`,
     [lat, lng, radius]
   );
-  res.json(rows.map((s) => ({ ...s, distance_m: Math.round(s.distance_m) })));
+  res.json(rows.map((s) => ({ ...s, distance_m: Math.round(s.distance_m), reserve: reserveWindow(s, s.distance_m) })));
 }));
 
 r.get('/shops/:id', wrap(async (req, res) => {
@@ -202,7 +219,7 @@ r.get('/shops/:id', wrap(async (req, res) => {
      WHERE shop_id = $1 AND active ORDER BY category, (stock = 0), name`,
     [shop.id]
   );
-  res.json({ ...shop, distance_m: Math.round(shop.distance_m), products });
+  res.json({ ...shop, distance_m: Math.round(shop.distance_m), reserve: reserveWindow(shop, shop.distance_m), products });
 }));
 
 r.get('/search', wrap(async (req, res) => {
@@ -223,12 +240,50 @@ r.get('/search', wrap(async (req, res) => {
 // ---------- customer: freezes (orders) ----------
 
 r.post('/freezes', requireAuth('customer'), wrap(async (req, res) => {
-  const freeze = await createFreeze(req.user, Number(req.body?.shopId), req.body?.items);
+  // The customer's position decides who can still reserve near closing time.
+  const from = readPoint(req.body || {}, false);
+  const freeze = await createFreeze(req.user, Number(req.body?.shopId), req.body?.items, from);
   res.status(201).json(freeze);
 }));
 
 r.get('/freezes', requireAuth('customer'), wrap(async (req, res) => {
   res.json(await freezesForUser(req.user.id));
+}));
+
+/**
+ * "Repeat order": products this customer reserved before (cancelled orders
+ * don't count), with today's price and stock, still listed, not past their
+ * expiry date, and inside the walking radius. Most often / most recent first.
+ */
+r.get('/reorder', requireAuth('customer'), wrap(async (req, res) => {
+  const { lat, lng } = readPoint(req.query);
+  const radius = readRadius(req.query.radius);
+  const { rows } = await query(
+    `SELECT * FROM (
+       SELECT p.id, p.name, p.brand, p.category, p.unit, p.price, p.stock, p.expires_on, p.image_id,
+              s.id AS shop_id, s.name AS shop_name,
+              ${DISTANCE_SQL('$2', '$3')} AS distance_m,
+              h.times, h.last_at
+       FROM (
+         SELECT fi.product_id, count(*)::int AS times, max(f.created_at) AS last_at
+         FROM freeze_items fi JOIN freezes f ON f.id = fi.freeze_id
+         WHERE f.user_id = $1 AND f.status <> 'cancelled'
+         GROUP BY fi.product_id
+       ) h
+       JOIN products p ON p.id = h.product_id
+       JOIN shops s ON s.id = p.shop_id
+       WHERE p.active AND (p.expires_on IS NULL OR p.expires_on >= current_date)
+     ) x
+     WHERE distance_m <= $4
+     ORDER BY (stock > 0) DESC, times DESC, last_at DESC
+     LIMIT 12`,
+    [req.user.id, lat, lng, radius]
+  );
+  const { rows: [{ orders }] } = await query(
+    `SELECT count(*)::int AS orders FROM freezes WHERE user_id = $1 AND status <> 'cancelled'`,
+    [req.user.id]
+  );
+  res.json({ orders, items: rows.map((p) => ({ ...p, distance_m: Math.round(p.distance_m) })) });
 }));
 
 r.delete('/freezes/:id', requireAuth('customer'), wrap(async (req, res) => {
@@ -263,7 +318,84 @@ r.get('/shop/me', shopOnly, wrap(async (req, res) => {
      FROM freezes WHERE shop_id = $1`,
     [shop.id]
   );
-  res.json({ shop, products, stats });
+  res.json({ shop: { ...shop, reserve: reserveWindow(shop, 0) }, products, stats });
+}));
+
+/** Shopkeeper sets opening and closing times (shop's local time, 24-hour 'HH:MM'). */
+r.patch('/shop/hours', shopOnly, wrap(async (req, res) => {
+  const shop = await myShop(req.user.id);
+  const { opens_at, closes_at } = readHours(req.body, true);
+  const { rows: [updated] } = await query(
+    `UPDATE shops SET opens_at = $2, closes_at = $3 WHERE id = $1 RETURNING *`,
+    [shop.id, opens_at, closes_at]
+  );
+  res.json({ shop: updated, reserve: reserveWindow(updated, 0) });
+}));
+
+/**
+ * Update the search index inside the request, so changes show even where the
+ * Kafka consumer isn't running (e.g. serverless hosting). The consumer still
+ * runs as a backup when it is available; a search hiccup never fails the write.
+ */
+async function syncNow(id) {
+  try { await syncProduct(id); }
+  catch (e) { console.error('[search] immediate sync failed:', e.message); }
+}
+
+/** Record a shopkeeper's stock change for the activity feed. Never fails the change itself. */
+async function logStock(shopId, product, action, delta = null) {
+  try {
+    await query(
+      `INSERT INTO stock_log (shop_id, product_id, name, action, delta, stock) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [shopId, product.id, product.name, action, delta, product.stock ?? null]
+    );
+  } catch (e) {
+    console.error('[activity] stock log failed:', e.message);
+  }
+}
+
+/**
+ * The shop's live activity, read straight from the database (no Kafka), so it
+ * works the same on a full server and on serverless hosting like Vercel.
+ * Orders come from the reservations themselves; stock changes from stock_log.
+ * A reservation past its time counts as "not picked up" even where the expiry
+ * worker isn't running.
+ */
+r.get('/shop/activity', shopOnly, wrap(async (req, res) => {
+  const shop = await myShop(req.user.id);
+  const { rows: orders } = await query(
+    `WITH f AS (
+       SELECT f.id, f.code, f.status, f.total, f.created_at, f.closed_at, f.expires_at, u.name AS customer,
+              json_agg(json_build_object('name', i.name, 'qty', i.qty) ORDER BY i.name) AS items
+       FROM freezes f JOIN users u ON u.id = f.user_id JOIN freeze_items i ON i.freeze_id = f.id
+       WHERE f.shop_id = $1 AND GREATEST(f.created_at, COALESCE(f.closed_at, f.expires_at)) > now() - interval '7 days'
+       GROUP BY f.id, u.name
+     )
+     SELECT * FROM (
+       SELECT 'r' || id AS key, 'reserved' AS type, created_at AS at, code, customer, total, items FROM f
+       UNION ALL
+       SELECT 'c' || id, CASE WHEN status = 'active' THEN 'expired' ELSE status END,
+              COALESCE(closed_at, expires_at), code, customer, total, items
+       FROM f WHERE status <> 'active' OR expires_at <= now()
+     ) x
+     ORDER BY at DESC LIMIT 40`,
+    [shop.id]
+  );
+  let stock = [];
+  try {
+    ({ rows: stock } = await query(
+      `SELECT 's' || id AS key, action AS type, created_at AS at, name, delta, stock FROM stock_log
+       WHERE shop_id = $1 AND created_at > now() - interval '7 days' ORDER BY created_at DESC LIMIT 40`,
+      [shop.id]
+    ));
+  } catch (e) {
+    console.error('[activity] stock log read failed:', e.message);
+  }
+  const feed = [
+    ...orders.map((o) => ({ ...o, kind: 'order' })),
+    ...stock.map((s) => ({ ...s, kind: 'stock' })),
+  ].sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 40);
+  res.json(feed);
 }));
 
 r.post('/shop/products', shopOnly, wrap(async (req, res) => {
@@ -276,6 +408,8 @@ r.post('/shop/products', shopOnly, wrap(async (req, res) => {
     [shop.id, p.name, p.brand || null, p.category, p.unit || '1 pc', p.price, p.stock, p.expires_on || null, p.image_id ?? null]
   );
   await publish(TOPICS.inventory, 'inventory.changed', { reason: 'product.added', productIds: [created.id] }, shop.id);
+  await syncNow(created.id);
+  await logStock(shop.id, created, 'added');
   res.status(201).json(created);
 }));
 
@@ -286,12 +420,15 @@ r.patch('/shop/products/:id', shopOnly, wrap(async (req, res) => {
   const keys = Object.keys(p);
   if (!keys.length) throw new HttpError(400, 'Nothing to update');
   const sets = keys.map((k, i) => `${k} = $${i + 3}`).join(', ');
+  const { rows: [before] } = await query(`SELECT stock FROM products WHERE id = $1 AND shop_id = $2`, [req.params.id, shop.id]);
   const { rows: [updated] } = await query(
     `UPDATE products SET ${sets}, updated_at = now() WHERE id = $1 AND shop_id = $2 RETURNING *`,
     [req.params.id, shop.id, ...keys.map((k) => p[k])]
   );
   if (!updated) throw new HttpError(404, 'Product not found');
   await publish(TOPICS.inventory, 'inventory.changed', { reason: 'product.updated', productIds: [updated.id] }, shop.id);
+  await syncNow(updated.id);
+  await logStock(shop.id, updated, 'edited', before ? updated.stock - before.stock : null);
   res.json(updated);
 }));
 
@@ -302,11 +439,13 @@ r.post('/shop/products/:id/adjust', shopOnly, wrap(async (req, res) => {
   if (!Number.isInteger(delta) || Math.abs(delta) > 1000) throw new HttpError(400, 'Invalid change');
   const { rows: [p] } = await query(
     `UPDATE products SET stock = GREATEST(0, stock + $3), updated_at = now()
-     WHERE id = $1 AND shop_id = $2 RETURNING id, stock`,
+     WHERE id = $1 AND shop_id = $2 RETURNING id, name, stock`,
     [req.params.id, shop.id, delta]
   );
   if (!p) throw new HttpError(404, 'Product not found');
   await publish(TOPICS.inventory, 'inventory.changed', { reason: 'counter.adjust', productIds: [p.id] }, shop.id);
+  await syncNow(p.id);
+  await logStock(shop.id, p, 'adjusted', delta);
   res.json(p);
 }));
 
@@ -318,11 +457,13 @@ r.delete('/shop/products/:id', shopOnly, wrap(async (req, res) => {
     `SELECT 1 FROM freeze_items i JOIN freezes f ON f.id = i.freeze_id WHERE i.product_id = $1 AND f.status = 'active' LIMIT 1`,
     [id]
   );
-  const { rowCount } = busy
-    ? await query(`UPDATE products SET active = false, updated_at = now() WHERE id = $1 AND shop_id = $2`, [id, shop.id])
-    : await query(`DELETE FROM products WHERE id = $1 AND shop_id = $2`, [id, shop.id]);
-  if (!rowCount) throw new HttpError(404, 'Product not found');
+  const { rows: [gone] } = busy
+    ? await query(`UPDATE products SET active = false, updated_at = now() WHERE id = $1 AND shop_id = $2 RETURNING id, name`, [id, shop.id])
+    : await query(`DELETE FROM products WHERE id = $1 AND shop_id = $2 RETURNING id, name`, [id, shop.id]);
+  if (!gone) throw new HttpError(404, 'Product not found');
+  await logStock(shop.id, gone, 'removed');
   await publish(TOPICS.inventory, 'inventory.changed', { reason: 'product.removed', productIds: [id] }, shop.id);
+  await syncNow(id);
   res.json({ ok: true, hidden: Boolean(busy) });
 }));
 
@@ -345,6 +486,32 @@ r.post('/shop/images', shopOnly, wrap(async (req, res) => {
   );
   res.status(201).json({ id: img.id });
 }));
+
+/**
+ * Voice stock update: the shopkeeper speaks ("paneer bees packet, 2 dahi bik gaye"),
+ * we return the proposed changes. Nothing is saved here: the dashboard shows a
+ * confirm card and applies the ticked changes through /adjust, like the −/+ buttons.
+ */
+r.post(
+  '/shop/voice',
+  shopOnly,
+  express.raw({ type: 'audio/*', limit: MAX_BYTES }),
+  wrap(async (req, res) => {
+    if (voiceTooMany(req.user.id)) throw new HttpError(429, 'Too many voice updates. Please wait a minute.');
+    const shop = await myShop(req.user.id);
+    const { rows: products } = await query(
+      `SELECT p.id, p.name, p.unit, p.stock,
+              COALESCE((SELECT sum(i.qty) FROM freeze_items i JOIN freezes f ON f.id = i.freeze_id
+                        WHERE i.product_id = p.id AND f.status = 'active'), 0)::int AS frozen
+       FROM products p WHERE p.shop_id = $1 AND p.active ORDER BY p.name`,
+      [shop.id]
+    );
+    if (!products.length) throw new HttpError(400, 'Add some items first, then update them by voice');
+    const text = await transcribe(req.body, req.headers['content-type'], products.map((p) => p.name));
+    const { changes, unknown } = await parseStock(text, products);
+    res.json({ text, changes, unknown });
+  })
+);
 
 r.get('/shop/freezes', shopOnly, wrap(async (req, res) => {
   const shop = await myShop(req.user.id);

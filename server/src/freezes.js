@@ -3,6 +3,7 @@ import { tx, query } from './db.js';
 import { config } from './config.js';
 import { publish, TOPICS } from './kafka.js';
 import { HttpError } from './auth.js';
+import { checkReserve, metresBetween } from './hours.js';
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const makeCode = () =>
@@ -16,7 +17,7 @@ const makeCode = () =>
  * the same moment, the second waits, then sees stock = 0 and is refused.
  * The user row is locked too, so the active-freeze limit can't be raced.
  */
-export async function createFreeze(user, shopId, items) {
+export async function createFreeze(user, shopId, items, from = null) {
   if (!Array.isArray(items) || !items.length) throw new HttpError(400, 'Your cart is empty');
 
   const wanted = new Map();
@@ -41,8 +42,12 @@ export async function createFreeze(user, shopId, items) {
     if (count >= config.freeze.maxActivePerUser)
       throw new HttpError(409, `You already have ${count} active freezes. Pick those up or cancel one first.`);
 
-    const { rows: [shop] } = await c.query(`SELECT id, name, owner_id FROM shops WHERE id = $1`, [shopId]);
+    const { rows: [shop] } = await c.query(
+      `SELECT id, name, owner_id, lat, lng, opens_at, closes_at FROM shops WHERE id = $1`, [shopId]);
     if (!shop) throw new HttpError(404, 'Shop not found');
+    // Closed shops take no reservations; near closing only people who can walk
+    // there in time may reserve, and the hold ends at closing time.
+    const holdSecs = checkReserve(shop, from ? metresBetween(from, shop) : null);
 
     const { rows: products } = await c.query(
       `SELECT id, name, unit, price, stock FROM products
@@ -69,9 +74,9 @@ export async function createFreeze(user, shopId, items) {
     const total = products.reduce((sum, p) => sum + p.price * wanted.get(p.id), 0);
     const { rows: [freeze] } = await c.query(
       `INSERT INTO freezes (code, user_id, shop_id, status, total, expires_at)
-       VALUES ($1, $2, $3, 'active', $4, now() + make_interval(mins => $5))
+       VALUES ($1, $2, $3, 'active', $4, now() + make_interval(secs => $5))
        RETURNING id, code, status, total, expires_at, created_at`,
-      [makeCode(), user.id, shopId, total.toFixed(2), config.freeze.minutes]
+      [makeCode(), user.id, shopId, total.toFixed(2), holdSecs]
     );
     const lines = products.map((p) => ({ productId: p.id, name: p.name, unit: p.unit, price: p.price, qty: wanted.get(p.id) }));
     for (const l of lines) {

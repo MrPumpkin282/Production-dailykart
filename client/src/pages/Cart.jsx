@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { api, rupees } from '../lib/api.js';
+import { api, rupees, fmtTime } from '../lib/api.js';
+import { useLocation2 } from '../lib/location.jsx';
 import ProductImage from '../components/ProductImage.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import { useCart } from '../lib/cart.jsx';
@@ -10,15 +11,29 @@ import { QtyStepper } from '../components/ProductCard.jsx';
 import { BellIcon } from '../components/icons.jsx';
 
 /** One shop's basket, styled like the Figma "Your neighbourhood basket" panel. */
-function Basket({ group, onReserved }) {
+export function Basket({ group, onReserved }) {
   const { user } = useAuth();
   const { setQty, clearShop, applyStock } = useCart();
   const toast = useToast();
   const nav = useNavigate();
+  const { loc } = useLocation2() || {};
   const [busy, setBusy] = useState(false);
+  const [info, setInfo] = useState(null); // shop hours + whether this customer can reserve now
   const items = Object.values(group.items);
   const total = items.reduce((s, i) => s + i.price * i.qty, 0);
   const shop = { id: group.shopId, name: group.shopName };
+
+  // Check opening hours / closing-time rule now and every minute (it changes as closing nears).
+  useEffect(() => {
+    if (!loc) return;
+    const check = () => api(`/shops/${group.shopId}`, { params: { lat: loc.lat, lng: loc.lng } })
+      .then((s) => setInfo({ opens_at: s.opens_at, closes_at: s.closes_at, ...s.reserve }))
+      .catch(() => {});
+    check();
+    const t = setInterval(check, 60000);
+    return () => clearInterval(t);
+  }, [group.shopId, loc?.lat, loc?.lng]);
+  const blocked = info && !info.canReserve;
 
   const reserve = async () => {
     if (!user) return nav('/login', { state: { from: '/cart' } });
@@ -26,7 +41,7 @@ function Basket({ group, onReserved }) {
     try {
       const f = await api('/freezes', {
         method: 'POST',
-        body: { shopId: group.shopId, items: items.map((i) => ({ productId: i.id, qty: i.qty })) },
+        body: { shopId: group.shopId, lat: loc?.lat, lng: loc?.lng, items: items.map((i) => ({ productId: i.id, qty: i.qty })) },
       });
       clearShop(group.shopId);
       toast(`Reserved! Show code ${f.code} at ${group.shopName}`, 'success');
@@ -49,10 +64,21 @@ function Basket({ group, onReserved }) {
         <button onClick={() => clearShop(group.shopId)} className="text-xs font-semibold text-ink-faint hover:text-maroon-600">Clear</button>
       </header>
 
-      <div className="mx-4 rounded-lg bg-saffron-50 px-3 py-2 text-xs">
-        <span className="font-bold text-maroon-600">Held for 30 minutes</span>
-        <span className="text-ink-soft"> once you reserve. Walk over and pay at the counter.</span>
-      </div>
+      {blocked ? (
+        <div className="mx-4 rounded-lg bg-maroon-50 px-3 py-2 text-xs text-maroon-700">
+          <span className="font-bold">{info.open ? "Can't reserve right now. " : 'Shop closed. '}</span>{info.reason}
+        </div>
+      ) : info?.closingSoon ? (
+        <div className="mx-4 rounded-lg bg-saffron-50 px-3 py-2 text-xs">
+          <span className="font-bold text-maroon-600">Held until {fmtTime(info.closes_at)}</span>
+          <span className="text-ink-soft"> ({info.holdMins} min), when the shop closes. Head over now and pay at the counter.</span>
+        </div>
+      ) : (
+        <div className="mx-4 rounded-lg bg-saffron-50 px-3 py-2 text-xs">
+          <span className="font-bold text-maroon-600">Held for 30 minutes</span>
+          <span className="text-ink-soft"> once you reserve. Walk over and pay at the counter.</span>
+        </div>
+      )}
 
       <ul className="mx-4 mt-3 divide-y divide-cream-line rounded-xl border border-cream-line bg-white">
         {items.map((i) => (
@@ -79,8 +105,8 @@ function Basket({ group, onReserved }) {
       </div>
 
       <div className="px-4 pb-4">
-        <button onClick={reserve} disabled={busy} className="btn-primary w-full py-3">
-          {busy ? 'Reserving…' : user ? `Reserve for pickup · ${rupees(total)}` : 'Log in to reserve'}
+        <button onClick={reserve} disabled={busy || (user && blocked)} className="btn-primary w-full py-3">
+          {busy ? 'Reserving…' : !user ? 'Log in to reserve' : blocked ? (info.open ? 'Too far to make it before closing' : `Opens at ${fmtTime(info.opens_at)}`) : `Reserve for pickup · ${rupees(total)}`}
         </button>
       </div>
     </section>

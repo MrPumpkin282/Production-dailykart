@@ -4,13 +4,13 @@ import { api, CATEGORY_EMOJI } from '../lib/api.js';
 import { useLocation2 } from '../lib/location.jsx';
 import LocationGate from '../components/LocationGate.jsx';
 import ProductCard from '../components/ProductCard.jsx';
-import RadiusToggle from '../components/RadiusToggle.jsx';
+import RadiusToggle, { fmtRadius } from '../components/RadiusToggle.jsx';
+import Dropdown from '../components/Dropdown.jsx';
 import { SearchIcon, BoltIcon, XIcon } from '../components/icons.jsx';
 
 const SORTS = [
   ['relevance', 'Best match'],
   ['distance', 'Nearest'],
-  ['expiry', 'Expiring soon'],
   ['price', 'Lowest price'],
 ];
 const PRICES = [['', 'Any price'], ['50', 'Under ₹50'], ['100', 'Under ₹100'], ['200', 'Under ₹200']];
@@ -20,7 +20,8 @@ function SearchInner() {
   const [params, setParams] = useSearchParams();
   const q = params.get('q') || '';
   const category = params.get('category') || '';
-  const sort = params.get('sort') || 'relevance';
+  // Unknown or removed sorts (e.g. an old "?sort=expiry" link) fall back to Best match.
+  const sort = SORTS.some(([v]) => v === params.get('sort')) ? params.get('sort') : 'relevance';
   const maxPrice = params.get('maxPrice') || '';
 
   const [text, setText] = useState(q);
@@ -73,12 +74,8 @@ function SearchInner() {
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <select value={sort} onChange={(e) => update({ sort: e.target.value === 'relevance' ? '' : e.target.value })} className="input w-auto py-2" aria-label="Sort by">
-            {SORTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-          <select value={maxPrice} onChange={(e) => update({ maxPrice: e.target.value })} className="input w-auto py-2" aria-label="Price">
-            {PRICES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
+          <Dropdown label="Sort" value={sort} options={SORTS} onChange={(v) => update({ sort: v === 'relevance' ? '' : v })} />
+          <Dropdown label="Price" value={maxPrice} options={PRICES} onChange={(v) => update({ maxPrice: v })} />
           <div className="ml-auto"><RadiusToggle /></div>
         </div>
       </div>
@@ -99,7 +96,7 @@ function SearchInner() {
 
       <div className="mt-6 flex items-center justify-between gap-3 text-sm">
         <p className="font-semibold">
-          {data ? `${data.total} item${data.total === 1 ? '' : 's'} within ${radius} m` : 'Searching…'}
+          {data ? `${data.total} item${data.total === 1 ? '' : 's'} within ${fmtRadius(radius)}` : 'Searching…'}
           {q && <span className="font-normal text-ink-soft"> for “{q}”</span>}
         </p>
         {data && (
@@ -115,7 +112,7 @@ function SearchInner() {
         <div className="card mt-4 p-10 text-center">
           <p className="text-4xl">🔍</p>
           <p className="mt-3 font-semibold">Nothing nearby matches that</p>
-          <p className="mt-1 text-sm text-ink-soft">Try another word, or switch to 750 m.</p>
+          <p className="mt-1 text-sm text-ink-soft">Try another word, or switch to 1 km.</p>
         </div>
       )}
 

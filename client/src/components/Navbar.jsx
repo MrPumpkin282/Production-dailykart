@@ -3,11 +3,13 @@ import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { useCart } from '../lib/cart.jsx';
 import { useLocation2 } from '../lib/location.jsx';
+import { useUI } from '../lib/ui.jsx';
 import { Logo } from './Brand.jsx';
-import { HomeIcon, SearchIcon, CartIcon, PinIcon, XIcon } from './icons.jsx';
+import { SearchIcon, CartIcon, PinIcon, XIcon } from './icons.jsx';
 
 function AccountMenu({ onClose }) {
   const { user, logout } = useAuth();
+  const { openCart } = useUI();
   const nav = useNavigate();
   const ref = useRef(null);
 
@@ -28,7 +30,7 @@ function AccountMenu({ onClose }) {
         <button onClick={onClose} aria-label="Close" className="grid h-7 w-7 place-items-center rounded-lg border border-cream-line bg-white text-maroon-600"><XIcon className="h-4 w-4" /></button>
       </div>
       <Link to="/orders" onClick={onClose} className={item}>My orders <span aria-hidden="true">›</span></Link>
-      <Link to="/cart" onClick={onClose} className={item}>My basket <span aria-hidden="true">›</span></Link>
+      <button onClick={() => { onClose(); openCart(); }} className={item}>My basket <span aria-hidden="true">›</span></button>
       <button onClick={() => { logout(); onClose(); nav('/'); }} className={`${item} text-maroon-600`}>Log out</button>
     </div>
   );
@@ -38,6 +40,7 @@ export default function Navbar() {
   const { user, logout } = useAuth();
   const { count } = useCart();
   const { loc, setPickerOpen } = useLocation2();
+  const { openCart } = useUI();
   const nav = useNavigate();
   const [q, setQ] = useState('');
   const [menu, setMenu] = useState(false);
@@ -51,7 +54,7 @@ export default function Navbar() {
 
   return (
     <>
-      <header className="sticky top-0 z-40 bg-saffron-400 shadow-sm">
+      <header className="sticky top-0 z-40 bg-saffron-400 shadow-sm transition-colors dark:border-b dark:border-cream-line dark:bg-cream-deep">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-3 px-4">
           <Link to={isShop ? '/shop/dashboard' : '/'} className="shrink-0"><Logo light small /></Link>
 
@@ -77,11 +80,11 @@ export default function Navbar() {
                 <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search for milk, atta, vegetables…" aria-label="Search products" className="min-w-0 flex-1 bg-transparent py-2 text-sm focus:outline-none" />
               </form>
 
-              <Link to="/cart" className="ml-auto flex items-center gap-2 rounded-lg bg-maroon-600 px-3 py-2 text-sm font-semibold text-white hover:bg-maroon-700 sm:ml-0">
+              <button onClick={openCart} className="ml-auto flex items-center gap-2 rounded-lg bg-maroon-600 px-3 py-2 text-sm font-semibold text-white hover:bg-maroon-700 sm:ml-0">
                 <CartIcon className="h-4 w-4" />
                 <span className="hidden sm:inline">Cart</span>
-                {count > 0 && <span className="rounded-full bg-saffron-400 px-1.5 text-[11px] font-bold text-ink">{count}</span>}
-              </Link>
+                {count > 0 && <span className="on-saffron rounded-full bg-saffron-400 px-1.5 text-[11px] font-bold text-ink">{count}</span>}
+              </button>
             </>
           )}
 
@@ -115,16 +118,7 @@ export default function Navbar() {
           </div>
         )}
       </header>
-
-      {!isShop && (
-        <nav className="fixed inset-x-0 bottom-0 z-40 flex justify-around border-t border-cream-line bg-white py-2 sm:hidden">
-          {[['/', 'Home', HomeIcon], ['/search', 'Search', SearchIcon], ['/cart', 'Cart', CartIcon], ['/orders', 'Orders', PinIcon]].map(([to, label, Icon]) => (
-            <NavLink key={to} to={to} end className={({ isActive }) => `flex flex-col items-center text-[11px] font-semibold ${isActive ? 'text-maroon-600' : 'text-ink-soft'}`}>
-              <Icon className="h-5 w-5" />{label}
-            </NavLink>
-          ))}
-        </nav>
-      )}
+      {/* The old phone bottom bar is replaced by the floating dock (Dock.jsx). */}
     </>
   );
 }

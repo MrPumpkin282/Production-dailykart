@@ -51,7 +51,7 @@ export const config = {
   // Customers only see shops inside this walking radius (metres).
   radius: {
     min: 500,
-    max: 750,
+    max: 1000,
     default: 750,
   },
 

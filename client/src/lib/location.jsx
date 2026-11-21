@@ -32,6 +32,16 @@ export async function searchPlaces(text) {
   });
 }
 
+/** Street address at a map position (OpenStreetMap, free). Returns a short text or ''. */
+export async function reversePlace(lat, lng) {
+  const url = new URL('https://nominatim.openstreetmap.org/reverse');
+  url.search = new URLSearchParams({ format: 'jsonv2', lat: String(lat), lon: String(lng), zoom: '18', addressdetails: '1' });
+  const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+  if (!res.ok) return '';
+  const r = await res.json();
+  return r.display_name || '';
+}
+
 export function LocationProvider({ children }) {
   const [loc, setLocState] = useState(() => read(KEY, null));
   const [recent, setRecent] = useState(() => read(RECENT_KEY, []));
