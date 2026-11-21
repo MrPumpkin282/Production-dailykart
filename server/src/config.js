@@ -43,6 +43,8 @@ export const config = {
   // Public URL of the site, e.g. https://dailycart.onrender.com. Locks CORS to it.
   appOrigin: process.env.APP_ORIGIN || '',
   timezone: process.env.APP_TIMEZONE || 'Asia/Kolkata',
+  // OAuth client ID for "Continue with Google". Public (it is sent to the browser); blank turns the button off.
+  googleClientId: (process.env.GOOGLE_CLIENT_ID || '').trim(),
   // Customers whose freezes expire this many times in a week can't freeze for a day.
   noShowLimit: num(process.env.NO_SHOW_LIMIT, 3),
 

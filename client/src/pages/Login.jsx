@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { Logo, ArchMascot } from '../components/Brand.jsx';
+import GoogleButton from '../components/GoogleButton.jsx';
 
 /** Split screen from the Figma: saffron story panel left, cream form right. */
 export function AuthLayout({ headline, story, topLink, children }) {
@@ -81,7 +82,7 @@ export function PasswordField({ value, onChange, autoComplete, label = 'Password
 }
 
 export default function Login() {
-  const { login, register } = useAuth();
+  const { login, register, googleLogin } = useAuth();
   const nav = useNavigate();
   const from = useLocation().state?.from || '/';
   const [mode, setMode] = useState('login');
@@ -97,6 +98,19 @@ export default function Login() {
     try {
       if (mode === 'login') await login(form.email, form.password, 'customer');
       else await register({ name: form.name, email: form.email, phone: form.phone || undefined, password: form.password, role: 'customer' });
+      nav(from, { replace: true });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const withGoogle = async (credential) => {
+    setBusy(true);
+    setError('');
+    try {
+      await googleLogin(credential, 'customer');
       nav(from, { replace: true });
     } catch (err) {
       setError(err.message);
@@ -138,6 +152,8 @@ export default function Login() {
         {error && <p className="rounded-lg bg-maroon-50 px-3 py-2 text-sm text-maroon-700">{error}</p>}
         <button disabled={busy} className="btn-primary w-full">{busy ? 'Please wait…' : mode === 'login' ? 'Log in' : 'Create account'}</button>
       </form>
+
+      <GoogleButton onToken={withGoogle} disabled={busy} />
 
       <p className="mt-6 text-center text-xs text-ink-soft">
         {mode === 'login'

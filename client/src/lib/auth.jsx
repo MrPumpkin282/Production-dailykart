@@ -24,13 +24,14 @@ export function AuthProvider({ children }) {
 
   const login = (email, password, role) => api('/auth/login', { method: 'POST', body: { email, password, role } }).then(save);
   const register = (payload) => api('/auth/register', { method: 'POST', body: payload }).then(save);
+  const googleLogin = (credential, role) => api('/auth/google', { method: 'POST', body: { credential, role } }).then(save);
   const logout = () => {
     tokenStore.set(null);
     try { sessionStorage.removeItem(USER_KEY); } catch {}
     setUser(null);
   };
 
-  return <AuthCtx.Provider value={{ user, login, register, logout }}>{children}</AuthCtx.Provider>;
+  return <AuthCtx.Provider value={{ user, login, register, googleLogin, logout }}>{children}</AuthCtx.Provider>;
 }
 
 export const useAuth = () => useContext(AuthCtx);

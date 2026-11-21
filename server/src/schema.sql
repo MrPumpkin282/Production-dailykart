@@ -82,6 +82,10 @@ CREATE TABLE IF NOT EXISTS product_images (
 );
 ALTER TABLE products ADD COLUMN IF NOT EXISTS image_id INT REFERENCES product_images(id) ON DELETE SET NULL;
 
+-- Google sign-in: accounts may have no password, and are matched by Google's stable user id.
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub TEXT UNIQUE;
+
 -- Stock changes made by the shopkeeper, written by the API in the same request
 -- (no Kafka), so the shop's live activity feed works on any hosting.
 -- No foreign key on product_id: history stays after a product is deleted.
