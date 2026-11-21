@@ -25,7 +25,7 @@ app.use('/api', routes);
 
 // Serve the built React app in production (npm run build in client/).
 const clientDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'client', 'dist');
-if (fs.existsSync(clientDist)) {
+if (!process.env.VERCEL && fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
   app.get(/^\/(?!api).*/, (req, res) => res.sendFile(path.join(clientDist, 'index.html')));
 }
@@ -70,10 +70,14 @@ async function shutdown() {
   await pool.end().catch(() => {});
   process.exit(0);
 }
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+if (!process.env.VERCEL) {
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 
-start().catch((err) => {
-  console.error('Failed to start:', err);
-  process.exit(1);
-});
+  start().catch((err) => {
+    console.error('Failed to start:', err);
+    process.exit(1);
+  });
+}
+
+export default app;
