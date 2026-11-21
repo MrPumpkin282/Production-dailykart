@@ -1,13 +1,25 @@
+# Node
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Secrets: keep these out of git
+.env
+.env.*
+!.env.example
+certs/
+*.pem
+*.key
+
 # Python-generated files
 __pycache__/
 *.py[oc]
 build/
-dist/
 wheels/
 *.egg-info
 
 # Virtual environments
 .venv
-.env
+venv
 env
-
