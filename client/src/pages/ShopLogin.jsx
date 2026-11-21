@@ -3,11 +3,12 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { searchPlaces, reversePlace, useLocation2 } from '../lib/location.jsx';
 import { AuthLayout, Tabs, Field, PhoneField, PasswordField } from './Login.jsx';
+import GoogleButton from '../components/GoogleButton.jsx';
 import { PinIcon } from '../components/icons.jsx';
 import MapPinPicker from '../components/MapPinPicker.jsx';
 
 export default function ShopLogin() {
-  const { login, register } = useAuth();
+  const { login, register, googleLogin } = useAuth();
   const nav = useNavigate();
   const [params] = useSearchParams();
   const [mode, setMode] = useState(params.get('register') ? 'register' : 'login');
@@ -91,6 +92,20 @@ export default function ShopLogin() {
     }
   };
 
+  // Google only signs in to an existing shop; new shops register with the form (they need the shop's details).
+  const withGoogle = async (credential) => {
+    setBusy(true);
+    setError('');
+    try {
+      await googleLogin(credential, 'shopkeeper');
+      nav('/shop/dashboard', { replace: true });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <AuthLayout
       headline={<>Apni dukaan.<br />Ab online.</>}
@@ -156,6 +171,8 @@ export default function ShopLogin() {
         {error && <p className="rounded-lg bg-maroon-50 px-3 py-2 text-sm text-maroon-700">{error}</p>}
         <button disabled={busy} className="btn-primary w-full">{busy ? 'Please wait…' : mode === 'login' ? 'Log in to your shop' : 'Register my shop'}</button>
       </form>
+
+      {mode === 'login' && <GoogleButton onToken={withGoogle} disabled={busy} />}
 
       <p className="mt-6 text-center text-xs text-ink-soft">
         {mode === 'login'

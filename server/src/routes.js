@@ -8,6 +8,7 @@ import { searchProducts, os, syncProduct } from './search.js';
 import { kafkaStatus } from './status.js';
 import { reserveWindow, readHours } from './hours.js';
 import { transcribe, parseStock, voiceTooMany, MAX_BYTES } from './voice.js';
+import { verifyGoogleToken } from './google.js';
 import {
   createFreeze, cancelFreeze, collectFreeze, freezesForUser, freezesForShop,
 } from './freezes.js';
@@ -96,7 +97,10 @@ async function myShop(userId) {
 // ---------- meta ----------
 
 r.get('/config', (req, res) => {
-  res.json({ freezeMinutes: config.freeze.minutes, maxActive: config.freeze.maxActivePerUser, radius: config.radius, categories: CATEGORIES });
+  res.json({
+    freezeMinutes: config.freeze.minutes, maxActive: config.freeze.maxActivePerUser, radius: config.radius, categories: CATEGORIES,
+    googleClientId: config.googleClientId || null,
+  });
 });
 
 r.get('/health', wrap(async (req, res) => {
@@ -179,10 +183,56 @@ r.post('/auth/register', wrap(async (req, res) => {
 r.post('/auth/login', wrap(async (req, res) => {
   const { email, password, role } = req.body || {};
   const { rows: [user] } = await query(`SELECT * FROM users WHERE email = lower($1)`, [email || '']);
+  if (user && !user.password_hash) throw new HttpError(401, 'This account signs in with Google. Use "Continue with Google".');
   if (!user || !(await bcrypt.compare(password || '', user.password_hash))) throw new HttpError(401, 'Wrong email or password');
+  checkRole(user, role);
+  const safe = { id: user.id, name: user.name, email: user.email, role: user.role };
+  res.json({ token: signToken(safe), user: safe });
+}));
+
+function checkRole(user, role) {
   if (role && user.role !== role) {
     throw new HttpError(403, user.role === 'shopkeeper' ? 'This is a shopkeeper account. Use the shop login.' : 'This is a customer account. Use the customer login.');
   }
+}
+
+/**
+ * "Continue with Google". The browser sends Google's signed ID token; we verify it,
+ * then sign in the matching account. An existing email/password account with the same
+ * (Google-verified) email is linked on first use. New customers are created here; new
+ * shops still register through the shop form, since they need the shop's details.
+ */
+r.post('/auth/google', wrap(async (req, res) => {
+  const { credential, role = 'customer' } = req.body || {};
+  if (!['customer', 'shopkeeper'].includes(role)) throw new HttpError(400, 'Invalid role');
+  const g = await verifyGoogleToken(credential);
+
+  let { rows: [user] } = await query(
+    `SELECT id, name, email, role, google_sub FROM users WHERE google_sub = $1 OR email = lower($2)
+     ORDER BY (google_sub = $1) DESC NULLS LAST LIMIT 1`,
+    [g.sub, g.email]
+  );
+  if (user?.google_sub && user.google_sub !== g.sub) {
+    throw new HttpError(409, 'This email is linked to a different Google account.');
+  }
+  if (user && !user.google_sub) {
+    await query(`UPDATE users SET google_sub = $1 WHERE id = $2`, [g.sub, user.id]);
+  }
+  if (!user) {
+    if (role === 'shopkeeper') {
+      throw new HttpError(404, 'No shop is registered with this Google email yet. Register your shop first.');
+    }
+    try {
+      ({ rows: [user] } = await query(
+        `INSERT INTO users (name, email, google_sub, role) VALUES ($1, lower($2), $3, 'customer') RETURNING id, name, email, role`,
+        [g.name, g.email, g.sub]
+      ));
+    } catch (e) {
+      if (e.code === '23505') throw new HttpError(409, 'Account was just created. Please try again.');
+      throw e;
+    }
+  }
+  checkRole(user, role);
   const safe = { id: user.id, name: user.name, email: user.email, role: user.role };
   res.json({ token: signToken(safe), user: safe });
 }));
