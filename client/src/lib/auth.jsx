@@ -6,7 +6,7 @@ const USER_KEY = 'dailycart.user';
 
 function loadUser() {
   try {
-    return tokenStore.get() ? JSON.parse(localStorage.getItem(USER_KEY)) : null;
+    return tokenStore.get() ? JSON.parse(sessionStorage.getItem(USER_KEY)) : null;
   } catch {
     return null;
   }
@@ -17,7 +17,7 @@ export function AuthProvider({ children }) {
 
   const save = useCallback(({ token, user }) => {
     tokenStore.set(token);
-    try { localStorage.setItem(USER_KEY, JSON.stringify(user)); } catch {}
+    try { sessionStorage.setItem(USER_KEY, JSON.stringify(user)); } catch {}
     setUser(user);
     return user;
   }, []);
@@ -26,7 +26,7 @@ export function AuthProvider({ children }) {
   const register = (payload) => api('/auth/register', { method: 'POST', body: payload }).then(save);
   const logout = () => {
     tokenStore.set(null);
-    try { localStorage.removeItem(USER_KEY); } catch {}
+    try { sessionStorage.removeItem(USER_KEY); } catch {}
     setUser(null);
   };
 

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, metres, walkMins, CATEGORY_EMOJI } from '../lib/api.js';
+import { api, metres, walkMins, hoursLabel, CATEGORY_EMOJI } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { useLocation2 } from '../lib/location.jsx';
 import LocationGate from '../components/LocationGate.jsx';
 import ProductCard from '../components/ProductCard.jsx';
-import RadiusToggle from '../components/RadiusToggle.jsx';
+import RadiusToggle, { fmtRadius } from '../components/RadiusToggle.jsx';
 import { Mascot } from '../components/Brand.jsx';
 
 const CATS = ['Dairy', 'Bakery', 'Fruits & Veg', 'Snacks', 'Beverages', 'Ready to eat', 'Other'];
@@ -27,7 +27,10 @@ function HomeInner() {
   const { loc, radius } = useLocation2();
   const [shops, setShops] = useState(null);
   const [items, setItems] = useState(null);
+  // Products this customer reserved before; null until loaded (or not a customer).
+  const [repeat, setRepeat] = useState(null);
   const [error, setError] = useState('');
+  const isCustomer = user?.role === 'customer';
 
   useEffect(() => {
     const params = { lat: loc.lat, lng: loc.lng, radius };
@@ -38,20 +41,33 @@ function HomeInner() {
       .catch(() => setItems([]));
   }, [loc.lat, loc.lng, radius]);
 
+  useEffect(() => {
+    setRepeat(null);
+    if (!isCustomer) return;
+    api('/reorder', { params: { lat: loc.lat, lng: loc.lng, radius } })
+      .then((r) => setRepeat(r.items))
+      .catch(() => setRepeat([]));
+  }, [isCustomer, user?.id, loc.lat, loc.lng, radius]);
+
+  // Ordered before and something from those orders is available nearby: show "Repeat order".
+  const showRepeat = isCustomer && repeat?.length > 0;
+  const list = showRepeat ? repeat : items;
+  const loading = isCustomer ? repeat === null || (!showRepeat && items === null) : items === null;
+
   return (
     <main className="mx-auto max-w-6xl px-4 pb-24 pt-6 sm:pb-6">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
           <h1 className="text-2xl font-bold">Namaste{user ? `, ${user.name.split(' ')[0]}` : ''}</h1>
           <p className="text-sm text-ink-soft">
-            {shops ? `${shops.length} neighbourhood shop${shops.length === 1 ? '' : 's'} within ${radius} m of ${loc.label}` : 'Finding shops near you…'}
+            {shops ? `${shops.length} neighbourhood shop${shops.length === 1 ? '' : 's'} within ${fmtRadius(radius)} of ${loc.label}` : 'Finding shops near you…'}
           </p>
         </div>
       </div>
 
       {/* Hero */}
       <section className="mt-5 grid gap-4 lg:grid-cols-[2fr_1fr]">
-        <div className="relative flex overflow-hidden rounded-2xl bg-saffron-400">
+        <div className="relative flex overflow-hidden rounded-2xl bg-saffron-400 on-saffron">
           <div className="relative z-10 p-6 sm:p-8">
             <p className="text-[11px] font-bold uppercase tracking-wider text-maroon-700">Fresh from your lane</p>
             <h2 className="mt-2 text-2xl font-extrabold leading-tight text-maroon-600 sm:text-3xl">Ghar ki zarooratein.<br />Bas, Dailykart se.</h2>
@@ -60,7 +76,7 @@ function HomeInner() {
           </div>
           <div className="dots ml-auto hidden items-end pr-6 sm:flex"><Mascot className="h-48" /></div>
         </div>
-        <div className="flex flex-col justify-between rounded-2xl bg-maroon-600 p-6 text-white">
+        <div className="glass-maroon flex flex-col justify-between rounded-2xl p-6 text-white">
           <div>
             <p className="text-[11px] font-bold uppercase tracking-wider text-saffron-300">How it works</p>
             <h3 className="mt-2 text-xl font-bold">Reserve now.<br />Pay at the shop.</h3>
@@ -87,14 +103,18 @@ function HomeInner() {
 
       {/* Products */}
       <section className="mt-8">
-        <SectionHead title="Everyday favourites" sub="Freshest first: grab these before they're gone" action={<Link to="/search?sort=expiry" className="link text-sm">View all →</Link>} />
-        {items === null ? (
+        {showRepeat ? (
+          <SectionHead title="Repeat order" sub="Things you've reserved before, available near you now" action={<Link to="/orders" className="link text-sm">My orders →</Link>} />
+        ) : (
+          <SectionHead title="Everyday favourites" sub="Freshest first: grab these before they're gone" action={<Link to="/search" className="link text-sm">View all →</Link>} />
+        )}
+        {loading ? (
           <Skeleton />
-        ) : items.length === 0 ? (
-          <p className="card p-6 text-sm text-ink-soft">Nothing listed within {radius} m yet.</p>
+        ) : list.length === 0 ? (
+          <p className="card p-6 text-sm text-ink-soft">Nothing listed within {fmtRadius(radius)} yet.</p>
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
-            {items.map((p) => (
+            {list.map((p) => (
               <ProductCard key={p.id} product={p} shop={{ id: p.shop_id, name: p.shop_name, distance_m: p.distance_m }} showShop />
             ))}
           </div>
@@ -109,7 +129,7 @@ function HomeInner() {
         ) : shops.length === 0 ? (
           <div className="card p-8 text-center">
             <p className="text-3xl">🏪</p>
-            <p className="mt-2 font-semibold">No Dailykart shops within {radius} m yet</p>
+            <p className="mt-2 font-semibold">No Dailykart shops within {fmtRadius(radius)} yet</p>
             <p className="mt-1 text-sm text-ink-soft">Know a shop nearby? Ask them to <Link to="/shop/login?register=1" className="link">list their dukaan</Link>.</p>
           </div>
         ) : (
@@ -124,6 +144,11 @@ function HomeInner() {
                     <span className="font-semibold text-leaf-600">{metres(s.distance_m)} · {walkMins(s.distance_m)} min walk</span>
                     <span className="text-ink-faint"> · {s.in_stock} in stock</span>
                   </p>
+                  {s.reserve && (!s.reserve.open || s.reserve.closingSoon) && (
+                    <p className={`mt-1 text-[11px] font-semibold ${s.reserve.open ? 'text-maroon-600' : 'text-ink-faint'}`}>
+                      {hoursLabel(s)}{s.reserve.open && !s.reserve.canReserve ? ' · too far to reserve now' : ''}
+                    </p>
+                  )}
                 </div>
                 <span className="self-center text-maroon-600" aria-hidden="true">›</span>
               </Link>

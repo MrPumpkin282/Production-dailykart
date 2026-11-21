@@ -7,7 +7,7 @@ import { Logo, ArchMascot } from '../components/Brand.jsx';
 export function AuthLayout({ headline, story, topLink, children }) {
   return (
     <main className="grid min-h-screen lg:grid-cols-2">
-      <section className="relative flex flex-col bg-saffron-400 px-6 py-6 sm:px-10">
+      <section className="relative flex flex-col bg-saffron-400 on-saffron px-6 py-6 sm:px-10">
         <div className="flex items-start justify-between gap-4">
           <Link to="/"><Logo light /></Link>
           <span className="hidden pt-1 text-[11px] font-semibold uppercase tracking-wider text-ink/70 sm:block">Your neighbourhood, online</span>

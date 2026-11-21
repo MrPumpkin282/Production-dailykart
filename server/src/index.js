@@ -6,18 +6,21 @@ import cors from 'cors';
 import { config } from './config.js';
 import { pool } from './db.js';
 import routes from './routes.js';
+import chat from './chat.js';
 import { ensureTopics, connectProducer, disconnectProducer } from './kafka.js';
 import { startConsumers, stopConsumers } from './consumers.js';
 import { ensureIndex } from './search.js';
 import { expireDueFreezes } from './freezes.js';
 import { setKafkaUp } from './status.js';
 import { applySchema } from './scripts/schema.js';
+import { HttpError } from './auth.js';
 
 const app = express();
 app.use(cors());
 // Photo uploads need a bigger body than normal requests.
 app.use('/api/shop/images', express.json({ limit: '1mb' }));
 app.use(express.json({ limit: '100kb' }));
+app.use('/api', chat);
 app.use('/api', routes);
 
 // Serve the built React app in production (npm run build in client/).
@@ -30,7 +33,10 @@ if (!process.env.VERCEL && fs.existsSync(clientDist)) {
 app.use((err, req, res, next) => {
   const status = err.status || 500;
   if (status >= 500) console.error(err);
-  res.status(status).json({ error: status >= 500 ? 'Something went wrong on our side' : err.message, stock: err.stock });
+  // Our own HttpErrors carry a message written for users (e.g. "The assistant is busy"),
+  // so show it; anything unexpected gets a generic message and details stay in the log.
+  const friendly = status < 500 || err instanceof HttpError;
+  res.status(status).json({ error: friendly ? err.message : 'Something went wrong on our side', stock: err.stock });
 });
 
 async function start() {

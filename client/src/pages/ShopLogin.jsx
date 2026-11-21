@@ -1,21 +1,36 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
-import { searchPlaces } from '../lib/location.jsx';
+import { searchPlaces, reversePlace, useLocation2 } from '../lib/location.jsx';
 import { AuthLayout, Tabs, Field, PhoneField, PasswordField } from './Login.jsx';
 import { PinIcon } from '../components/icons.jsx';
+import MapPinPicker from '../components/MapPinPicker.jsx';
 
 export default function ShopLogin() {
   const { login, register } = useAuth();
   const nav = useNavigate();
   const [params] = useSearchParams();
   const [mode, setMode] = useState(params.get('register') ? 'register' : 'login');
-  const [form, setForm] = useState({ name: '', shopName: '', phone: '', address: '', city: '', pincode: '', email: '', password: '', agree: false });
+  const [form, setForm] = useState({ name: '', shopName: '', phone: '', address: '', city: '', pincode: '', opens: '07:00', closes: '22:00', email: '', password: '', agree: false });
   const [pin, setPin] = useState(null); // { lat, lng, label }
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const set = (k) => (e) => { setForm({ ...form, [k]: e.target.value }); if (['address', 'city', 'pincode'].includes(k)) setPin(null); };
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const { loc } = useLocation2() || {};
+  const lookup = useRef(null);
+  useEffect(() => () => clearTimeout(lookup.current), []);
+
+  /** The shopkeeper moved the map: keep the exact spot, then fetch its street address. */
+  const pinFromMap = ({ lat, lng }) => {
+    setError('');
+    setPin({ lat, lng, label: 'Looking up the address…' });
+    clearTimeout(lookup.current);
+    lookup.current = setTimeout(async () => {
+      const label = (await reversePlace(lat, lng).catch(() => '')) || `Pinned at ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+      setPin((p) => (p && p.lat === lat && p.lng === lng ? { ...p, label } : p));
+    }, 700);
+  };
 
   /** Turn the typed address + PIN code into a map position. */
   const findOnMap = async () => {
@@ -42,7 +57,7 @@ export default function ShopLogin() {
     setLocating(true);
     navigator.geolocation.getCurrentPosition(
       (p) => { setPin({ lat: p.coords.latitude, lng: p.coords.longitude, label: 'Current location' }); setLocating(false); },
-      () => { setError('Location is blocked on this device. Use "Find on map" with your address instead.'); setLocating(false); },
+      () => { setError('Location is blocked on this device. Use "Find my address" or drag the map instead.'); setLocating(false); },
       { enableHighAccuracy: true, timeout: 10000 }
     );
   };
@@ -50,7 +65,7 @@ export default function ShopLogin() {
   const submit = async (e) => {
     e.preventDefault();
     setError('');
-    if (mode === 'register' && !pin) return setError('Find your shop on the map first, so nearby customers can see it');
+    if (mode === 'register' && !pin) return setError('Put the pin on your shop first, so nearby customers can see it');
     setBusy(true);
     try {
       if (mode === 'login') await login(form.email, form.password, 'shopkeeper');
@@ -63,6 +78,8 @@ export default function ShopLogin() {
             city: form.city,
             lat: pin.lat,
             lng: pin.lng,
+            opens_at: form.opens,
+            closes_at: form.closes,
           },
         });
       }
@@ -103,13 +120,25 @@ export default function ShopLogin() {
 
             <div className={`rounded-lg border p-3 ${pin ? 'border-leaf-600 bg-leaf-50' : 'border-cream-line bg-white'}`}>
               <p className="flex items-center gap-1.5 text-xs font-semibold"><PinIcon className="h-4 w-4 text-maroon-600" />Shop on the map</p>
-              {pin
-                ? <p className="mt-1 line-clamp-2 text-xs text-leaf-600">✓ {pin.label}</p>
-                : <p className="mt-1 text-xs text-ink-soft">Customers within 750 m will see your shop.</p>}
+              <p className="mt-1 text-xs text-ink-soft">
+                Jump close with a button, then drag the map so the pin sits on your shop's door. Customers within 1 km will see your shop.
+              </p>
               <div className="mt-2 flex flex-wrap gap-2">
-                <button type="button" onClick={findOnMap} disabled={locating} className="btn-outline px-3 py-1.5 text-xs">{locating ? 'Finding…' : 'Find on map'}</button>
+                <button type="button" onClick={findOnMap} disabled={locating} className="btn-outline px-3 py-1.5 text-xs">{locating ? 'Finding…' : 'Find my address'}</button>
                 <button type="button" onClick={hereNow} disabled={locating} className="btn-ghost px-3 py-1.5 text-xs">I'm at my shop</button>
               </div>
+              <div className="mt-3">
+                <MapPinPicker value={pin} start={loc} onChange={pinFromMap} />
+              </div>
+              {pin && <p className="mt-2 line-clamp-2 text-xs text-leaf-600">✓ {pin.label}</p>}
+            </div>
+
+            <div>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Opens at" type="time" value={form.opens} onChange={set('opens')} required />
+                <Field label="Closes at" type="time" value={form.closes} onChange={set('closes')} required />
+              </div>
+              <p className="mt-1.5 text-xs text-ink-soft">Customers can't reserve while you're closed. Near closing time, only people close enough to reach you in time can reserve.</p>
             </div>
           </>
         )}

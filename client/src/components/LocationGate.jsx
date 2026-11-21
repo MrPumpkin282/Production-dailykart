@@ -9,7 +9,7 @@ export default function LocationGate({ children }) {
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
-      <section className="relative grid overflow-hidden rounded-2xl bg-saffron-400 sm:grid-cols-[1.4fr_1fr]">
+      <section className="relative grid overflow-hidden rounded-2xl bg-saffron-400 on-saffron sm:grid-cols-[1.4fr_1fr]">
         <div className="p-8 sm:p-12">
           <p className="text-xs font-bold uppercase tracking-wider text-maroon-700">Your neighbourhood, online</p>
           <h1 className="mt-3 text-3xl font-extrabold leading-tight text-maroon-600 sm:text-5xl">Ghar ki zarooratein.<br />Bas, Dailykart se.</h1>

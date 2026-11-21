@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { api, metres, walkMins, CATEGORY_EMOJI } from '../lib/api.js';
+import { api, metres, walkMins, hoursLabel, fmtTime, CATEGORY_EMOJI } from '../lib/api.js';
 import { useLocation2 } from '../lib/location.jsx';
 import { useCart } from '../lib/cart.jsx';
+import { useUI } from '../lib/ui.jsx';
 import LocationGate from '../components/LocationGate.jsx';
 import ProductCard from '../components/ProductCard.jsx';
 import { WalkIcon, ClockIcon, PinIcon } from '../components/icons.jsx';
@@ -11,6 +12,7 @@ function ShopInner() {
   const { id } = useParams();
   const { loc } = useLocation2();
   const { cart } = useCart();
+  const { openCart } = useUI();
   const [shop, setShop] = useState(null);
   const [error, setError] = useState('');
   const [cat, setCat] = useState('');
@@ -46,8 +48,23 @@ function ShopInner() {
           <p className="mt-1 flex items-center gap-1 text-sm text-ink-soft"><PinIcon className="h-4 w-4" />{shop.address}, {shop.city}</p>
           <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
             <span className="inline-flex items-center gap-1 rounded-full bg-leaf-50 px-3 py-1 text-leaf-600"><WalkIcon className="h-3.5 w-3.5" />{metres(shop.distance_m)} · {walkMins(shop.distance_m)} min walk</span>
-            <span className="inline-flex items-center gap-1 rounded-full bg-cream px-3 py-1 text-ink-soft"><ClockIcon className="h-3.5 w-3.5" />Open {shop.opens_at}–{shop.closes_at}</span>
+            <span
+              title={`Open ${fmtTime(shop.opens_at)} – ${fmtTime(shop.closes_at)}`}
+              className={`inline-flex items-center gap-1 rounded-full px-3 py-1 ${
+                !shop.reserve?.open ? 'bg-cream-deep text-ink-soft' : shop.reserve.closingSoon ? 'bg-saffron-50 text-maroon-700' : 'bg-cream text-ink-soft'
+              }`}
+            >
+              <ClockIcon className="h-3.5 w-3.5" />{hoursLabel(shop)}
+            </span>
           </div>
+          {shop.reserve && !shop.reserve.canReserve && (
+            <p className="mt-3 rounded-lg bg-maroon-50 px-3 py-2 text-sm text-maroon-700">{shop.reserve.reason} You can still browse and add to your basket.</p>
+          )}
+          {shop.reserve?.canReserve && shop.reserve.closingSoon && (
+            <p className="mt-3 rounded-lg bg-saffron-50 px-3 py-2 text-sm text-maroon-700">
+              Closing soon: reservations here are held until {fmtTime(shop.closes_at)}.
+            </p>
+          )}
         </div>
         <a
           className="btn-ghost"
@@ -71,11 +88,11 @@ function ShopInner() {
       </div>
 
       {inCart > 0 && (
-        <div className="fixed inset-x-3 bottom-20 z-30 sm:bottom-6">
-          <Link to="/cart" className="btn-primary mx-auto flex w-full max-w-md justify-between rounded-2xl px-6 py-4">
+        <div className="fixed inset-x-3 bottom-24 z-30 sm:bottom-28">
+          <button onClick={openCart} className="btn-primary mx-auto flex w-full max-w-md justify-between rounded-2xl px-6 py-4">
             <span>{inCart} item{inCart > 1 ? 's' : ''} from this shop</span>
             <span>Review &amp; freeze →</span>
-          </Link>
+          </button>
         </div>
       )}
     </main>

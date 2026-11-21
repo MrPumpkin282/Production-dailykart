@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
-import { api, rupees, CATEGORY_EMOJI, expiryLabel } from '../lib/api.js';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { api, rupees, CATEGORY_EMOJI, expiryLabel, fmtTime, hoursLabel } from '../lib/api.js';
 import { useToast } from '../components/Toast.jsx';
 import Countdown from '../components/Countdown.jsx';
+import VoiceStock from '../components/VoiceStock.jsx';
 import ProductImage, { imageUrl, shrinkImage } from '../components/ProductImage.jsx';
-import { PlusIcon, MinusIcon, SnowIcon, CheckIcon, BoltIcon, XIcon, BellIcon } from '../components/icons.jsx';
+import { PlusIcon, MinusIcon, PickupIcon, CheckIcon, XIcon, BellIcon, ClockIcon, StoreIcon } from '../components/icons.jsx';
 
 const CATEGORIES = ['Dairy', 'Bakery', 'Snacks', 'Fruits & Veg', 'Beverages', 'Ready to eat', 'Other'];
 const EMPTY = { name: '', brand: '', category: 'Dairy', unit: '', price: '', stock: '', expires_on: '', image_id: null };
@@ -86,7 +87,7 @@ function ProductForm({ initial, onSave, onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-0 backdrop-blur-sm sm:items-center sm:p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-shade/40 p-0 backdrop-blur-sm sm:items-center sm:p-4" onClick={onClose}>
       <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="card max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-b-none p-6 sm:rounded-2xl">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-extrabold">{initial ? 'Edit item' : 'Add an item'}</h2>
@@ -113,31 +114,197 @@ function ProductForm({ initial, onSave, onClose }) {
   );
 }
 
+/* ---------- Live activity feed (read from the database, works on any hosting) ---------- */
+
+const ago = (iso, now) => {
+  const s = Math.max(0, Math.round((now - new Date(iso)) / 1000));
+  if (s < 45) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+};
+
+const itemList = (items = []) => items.map((i) => `${i.qty}× ${i.name}`).join(', ');
+const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
+
+const TONES = {
+  order: 'bg-saffron-100 text-saffron-600',
+  done: 'bg-leaf-50 text-leaf-600',
+  bad: 'bg-maroon-50 text-maroon-600',
+  quiet: 'bg-cream-deep text-ink-soft',
+};
+
+/** Turn an activity row from /shop/activity into a sentence a shopkeeper understands. */
+function describe(e) {
+  const who = e.customer || 'A customer';
+  const shelf = e.stock != null ? ` · ${e.stock} on the shelf now` : '';
+  switch (e.type) {
+    case 'reserved':
+      return { Icon: PickupIcon, tone: 'order', tag: 'New order', title: `${who} reserved items`,
+        detail: `${itemList(e.items)} · ${rupees(e.total)}`, code: e.code };
+    case 'collected':
+      return { Icon: CheckIcon, tone: 'done', tag: 'Picked up', title: `${who} picked up their order`,
+        detail: `${itemList(e.items)} · ${rupees(e.total)} paid at the counter`, code: e.code };
+    case 'cancelled':
+      return { Icon: XIcon, tone: 'bad', tag: 'Cancelled', title: `${who} cancelled their order`,
+        detail: `${itemList(e.items)} went back on your shelf`, code: e.code };
+    case 'expired':
+      return { Icon: ClockIcon, tone: 'quiet', tag: 'Not picked up', title: `${who} didn't come in time`,
+        detail: `${itemList(e.items)} went back on your shelf`, code: e.code };
+    case 'added':
+      return { Icon: PlusIcon, tone: 'done', title: `You listed ${e.name}`, detail: `Customers nearby can find it now${shelf}` };
+    case 'adjusted':
+      return { Icon: e.delta < 0 ? MinusIcon : PlusIcon, tone: 'quiet', title: `${e.name}: ${signed(e.delta)} on the shelf`,
+        detail: `Counted at the counter${shelf}` };
+    case 'edited':
+      return { Icon: StoreIcon, tone: 'quiet', title: `You edited ${e.name}`,
+        detail: e.delta ? `Stock ${signed(e.delta)}${shelf}` : 'Details updated' };
+    case 'removed':
+      return { Icon: MinusIcon, tone: 'bad', title: `You removed ${e.name}`, detail: 'Hidden from customers' };
+    default:
+      return { Icon: StoreIcon, tone: 'quiet', title: 'Shop updated', detail: '' };
+  }
+}
+
+const FILTERS = [['all', 'All'], ['order', 'Orders'], ['stock', 'Stock']];
+
 function EventFeed() {
-  const [events, setEvents] = useState([]);
+  const [events, setEvents] = useState(null);
+  const [filter, setFilter] = useState('all');
+  const [now, setNow] = useState(Date.now());
+  const [failed, setFailed] = useState(false);
+  const seen = useRef(null);
+
   useEffect(() => {
-    const load = () => api('/events').then(setEvents).catch(() => {});
+    const load = () => {
+      // Skip refreshes while the tab is hidden; catch up as soon as it's visible again.
+      if (document.hidden) return;
+      api('/shop/activity')
+        .then((rows) => { setEvents(rows); setFailed(false); setNow(Date.now()); })
+        .catch(() => setFailed(true));
+    };
     load();
     const t = setInterval(load, 4000);
-    return () => clearInterval(t);
+    document.addEventListener('visibilitychange', load);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', load); };
   }, []);
+
+  const rows = (events || [])
+    .map((e) => ({ e, d: describe(e) }))
+    .filter(({ e }) => filter === 'all' || e.kind === filter);
+
+  // Highlight items that arrived since the last refresh (not on the first load).
+  const fresh = new Set();
+  if (seen.current) for (const { e } of rows) if (!seen.current.has(e.key)) fresh.add(e.key);
+  useEffect(() => { if (events) seen.current = new Set(events.map((e) => e.key)); }, [events]);
+
+  return (
+    <section className="card overflow-hidden">
+      <header className="border-b border-cream-line p-5 pb-4">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="font-bold">Live activity</h2>
+          <span className="flex items-center gap-1.5 rounded-full bg-leaf-50 px-2.5 py-1 text-[11px] font-semibold text-leaf-600">
+            <span className="relative flex h-2 w-2">
+              {!failed && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-leaf-600 opacity-60" />}
+              <span className={`relative inline-flex h-2 w-2 rounded-full ${failed ? 'bg-ink-faint' : 'bg-leaf-600'}`} />
+            </span>
+            {failed ? 'Reconnecting…' : 'Live'}
+          </span>
+        </div>
+        <p className="mt-0.5 text-xs text-ink-soft">Orders and stock changes at your shop, as they happen.</p>
+        <div className="mt-3 flex gap-1.5" role="group" aria-label="Show">
+          {FILTERS.map(([k, label]) => (
+            <button key={k} onClick={() => setFilter(k)} aria-pressed={filter === k}
+              className={`rounded-full px-3 py-1 text-xs font-semibold transition ${filter === k ? 'bg-maroon-600 text-white' : 'bg-cream-deep text-ink-soft hover:text-ink'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </header>
+
+      <ul className="max-h-[28rem] divide-y divide-cream-line overflow-y-auto">
+        {events === null ? (
+          [0, 1, 2].map((i) => <li key={i} className="flex gap-3 p-4"><span className="h-9 w-9 animate-pulse rounded-full bg-cream-deep" /><span className="h-9 flex-1 animate-pulse rounded-lg bg-cream-deep" /></li>)
+        ) : rows.length === 0 ? (
+          <li className="p-8 text-center">
+            <p className="text-3xl" aria-hidden="true">🛎️</p>
+            <p className="mt-2 text-sm font-semibold">Nothing here yet</p>
+            <p className="mt-1 text-xs text-ink-soft">New reservations and stock changes will show up here automatically.</p>
+          </li>
+        ) : (
+          rows.map(({ e, d }) => (
+            <li key={e.key} className={`flex gap-3 p-4 ${fresh.has(e.key) ? 'feed-in bg-saffron-50' : ''}`}>
+              <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-full ${TONES[d.tone]}`}><d.Icon className="h-4 w-4" /></span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-sm font-semibold leading-snug">{d.title}</p>
+                  <time dateTime={e.at} title={new Date(e.at).toLocaleString('en-IN')} className="shrink-0 text-[11px] text-ink-faint">{ago(e.at, now)}</time>
+                </div>
+                {d.detail && <p className="mt-0.5 text-xs text-ink-soft">{d.detail}</p>}
+                {(d.tag || d.code) && (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    {d.tag && <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${TONES[d.tone]}`}>{d.tag}</span>}
+                    {d.code && <span className="rounded border border-cream-line px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wider text-ink-soft">{d.code}</span>}
+                  </div>
+                )}
+              </div>
+            </li>
+          ))
+        )}
+      </ul>
+
+      <footer className="border-t border-cream-line px-5 py-2.5 text-[11px] text-ink-faint">
+        Last 7 days · refreshes every few seconds
+      </footer>
+    </section>
+  );
+}
+
+/** Opening hours. The dashboard refreshes every few seconds, so edits stay local until saved. */
+function ShopHours({ shop, onSaved }) {
+  const toast = useToast();
+  const [opens, setOpens] = useState(shop.opens_at);
+  const [closes, setCloses] = useState(shop.closes_at);
+  const [busy, setBusy] = useState(false);
+  const changed = opens !== shop.opens_at || closes !== shop.closes_at;
+  const r = shop.reserve;
+  const tone = !r?.open ? 'bg-cream-deep text-ink-soft' : r.closingSoon ? 'bg-saffron-50 text-maroon-700' : 'bg-leaf-50 text-leaf-600';
+
+  const save = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api('/shop/hours', { method: 'PATCH', body: { opens_at: opens, closes_at: closes } });
+      toast(`Hours saved: ${fmtTime(opens)} – ${fmtTime(closes)}`, 'success');
+      onSaved();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <section className="card p-5">
-      <h2 className="flex items-center gap-2 font-bold"><BoltIcon className="h-5 w-5 text-maroon-600" />Live event stream</h2>
-      <p className="text-xs text-ink-soft">Kafka events handled by the consumers</p>
-      <ul className="mt-4 max-h-96 space-y-2 overflow-y-auto pr-1">
-        {events.length === 0 && <li className="text-sm text-ink-faint">No events yet. Freeze something as a customer.</li>}
-        {events.map((e) => (
-          <li key={e.id} className="rounded-2xl bg-cream p-3 text-xs">
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-mono font-bold text-maroon-600">{e.event_type}</span>
-              <span className="text-ink-faint">{new Date(e.processed_at).toLocaleTimeString('en-IN')}</span>
-            </div>
-            <p className="mt-1 text-ink-soft"><span className="font-semibold text-ink">{e.consumer}</span> → {e.result}</p>
-          </li>
-        ))}
-      </ul>
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="flex items-center gap-2 font-bold"><ClockIcon className="h-5 w-5 text-maroon-600" />Shop hours</h2>
+        <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${tone}`}>{hoursLabel(shop)}</span>
+      </div>
+      <form onSubmit={save} className="mt-3">
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block"><span className="label">Opens at</span><input type="time" required value={opens} onChange={(e) => setOpens(e.target.value)} className="input" /></label>
+          <label className="block"><span className="label">Closes at</span><input type="time" required value={closes} onChange={(e) => setCloses(e.target.value)} className="input" /></label>
+        </div>
+        <p className="mt-2 text-xs text-ink-soft">
+          No reservations while you're closed. In the last 30 minutes, holds end at closing time and only customers who can walk here in time can reserve.
+        </p>
+        {changed && (
+          <div className="mt-3 flex gap-2">
+            <button disabled={busy} className="btn-primary flex-1 py-2">{busy ? 'Saving…' : 'Save hours'}</button>
+            <button type="button" onClick={() => { setOpens(shop.opens_at); setCloses(shop.closes_at); }} className="btn-ghost py-2">Undo</button>
+          </div>
+        )}
+      </form>
     </section>
   );
 }
@@ -233,7 +400,7 @@ export default function ShopDashboard() {
           {/* Pickups */}
           <section className="card p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="flex items-center gap-2 text-lg font-extrabold"><SnowIcon className="h-5 w-5 text-maroon-600" />Pickups</h2>
+              <h2 className="flex items-center gap-2 text-lg font-extrabold"><PickupIcon className="h-5 w-5 text-maroon-600" />Pickups</h2>
               <form onSubmit={(e) => { e.preventDefault(); if (code.trim()) collect({ code: code.trim() }); }} className="flex gap-2">
                 <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="DC-XXXXX" className="input w-36 py-2 font-mono uppercase" aria-label="Pickup code" />
                 <button className="btn bg-maroon-600 px-4 py-2 text-white">Collect</button>
@@ -278,8 +445,13 @@ export default function ShopDashboard() {
 
           {/* Inventory */}
           <section className="card p-5">
-            <h2 className="text-lg font-extrabold">Shelf</h2>
-            <p className="text-sm text-ink-soft">Tap − / + as items sell over the counter. Frozen units are already taken out.</p>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-extrabold">Shelf</h2>
+                <p className="text-sm text-ink-soft">Tap − / + as items sell over the counter, or speak an update. Frozen units are already taken out.</p>
+              </div>
+            </div>
+            <div className="mt-3"><VoiceStock onApplied={load} /></div>
             <ul className="mt-4 divide-y divide-black/5">
               {products.map((p) => {
                 const exp = expiryLabel(p.expires_on);
@@ -310,11 +482,25 @@ export default function ShopDashboard() {
         </div>
 
         <aside className="space-y-6">
+          <ShopHours key={`${shop.opens_at}-${shop.closes_at}`} shop={shop} onSaved={load} />
           {notes.length > 0 && (
-            <section className="card p-5">
-              <h2 className="flex items-center gap-2 font-bold"><BellIcon className="h-5 w-5 text-saffron-600" />Alerts</h2>
-              <ul className="mt-3 space-y-3 text-sm">
-                {notes.slice(0, 5).map((n) => <li key={n.id}>{n.message}</li>)}
+            <section className="glass-maroon rounded-2xl p-5 text-white">
+              <div className="flex items-center gap-2">
+                <span className="grid h-8 w-8 place-items-center rounded-lg bg-white/10 ring-1 ring-white/15">
+                  <BellIcon className="h-4 w-4 text-saffron-300" />
+                </span>
+                <h2 className="font-bold">Alerts</h2>
+                <span className="ml-auto rounded-full bg-white/15 px-2.5 py-0.5 text-[11px] font-semibold ring-1 ring-white/15">
+                  {Math.min(notes.length, 5)} new
+                </span>
+              </div>
+              <ul className="mt-3 space-y-2 text-sm">
+                {notes.slice(0, 5).map((n) => (
+                  <li key={n.id} className="rounded-xl bg-white/10 px-3 py-2.5 ring-1 ring-white/10 backdrop-blur-sm">
+                    <p className="leading-snug text-white/95">{n.message}</p>
+                    <time dateTime={n.created_at} className="mt-1 block text-[11px] text-white/60">{ago(n.created_at, Date.now())}</time>
+                  </li>
+                ))}
               </ul>
             </section>
           )}

@@ -3,6 +3,9 @@ import { useAuth } from './lib/auth.jsx';
 import Navbar from './components/Navbar.jsx';
 import Footer from './components/Footer.jsx';
 import LocationModal from './components/LocationModal.jsx';
+import ChatWidget from './components/ChatWidget.jsx';
+import CartDrawer from './components/CartDrawer.jsx';
+import AppDock from './components/Dock.jsx';
 import Home from './pages/Home.jsx';
 import Search from './pages/Search.jsx';
 import Shop from './pages/Shop.jsx';
@@ -48,6 +51,13 @@ export default function App() {
       </div>
       {!bare && <Footer />}
       <LocationModal />
+      {!bare && (
+        <>
+          <AppDock />
+          <CartDrawer />
+          <ChatWidget />
+        </>
+      )}
     </div>
   );
 }

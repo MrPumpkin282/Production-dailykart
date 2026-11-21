@@ -44,7 +44,7 @@ export default function ProductCard({ product, shop, showShop = false }) {
       <div className="relative grid aspect-square place-items-center overflow-hidden rounded-lg bg-cream">
         <ProductImage product={product} className="p-1.5" />
         {fresh && (
-          <span className="absolute left-1.5 top-1.5 rounded bg-saffron-400 px-1.5 py-0.5 text-[10px] font-bold text-ink">{exp.text}</span>
+          <span className="absolute left-1.5 top-1.5 rounded bg-saffron-400 on-saffron px-1.5 py-0.5 text-[10px] font-bold text-ink">{exp.text}</span>
         )}
         {!soldOut && product.stock <= 3 && (
           <span className="absolute bottom-1.5 left-1.5 rounded bg-white/90 px-1.5 py-0.5 text-[10px] font-semibold text-maroon-600">Only {product.stock} left</span>

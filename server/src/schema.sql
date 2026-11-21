@@ -82,6 +82,21 @@ CREATE TABLE IF NOT EXISTS product_images (
 );
 ALTER TABLE products ADD COLUMN IF NOT EXISTS image_id INT REFERENCES product_images(id) ON DELETE SET NULL;
 
+-- Stock changes made by the shopkeeper, written by the API in the same request
+-- (no Kafka), so the shop's live activity feed works on any hosting.
+-- No foreign key on product_id: history stays after a product is deleted.
+CREATE TABLE IF NOT EXISTS stock_log (
+  id         SERIAL PRIMARY KEY,
+  shop_id    INT NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+  product_id INT,
+  name       TEXT NOT NULL,
+  action     TEXT NOT NULL CHECK (action IN ('added', 'edited', 'adjusted', 'removed')),
+  delta      INT,
+  stock      INT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS stock_log_shop_idx ON stock_log(shop_id, created_at DESC);
+
 -- Every event a Kafka consumer handled, as proof for the demo.
 CREATE TABLE IF NOT EXISTS event_log (
   id           SERIAL PRIMARY KEY,

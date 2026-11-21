@@ -1,8 +1,11 @@
 const TOKEN_KEY = 'dailycart.token';
 
+// Per-tab storage: each browser window/tab keeps its own login, so you can be
+// signed in as a customer in one window and a shopkeeper in another at once.
+// sessionStorage survives a refresh but is not shared across tabs.
 export const tokenStore = {
-  get: () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } },
-  set: (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {} },
+  get: () => { try { return sessionStorage.getItem(TOKEN_KEY); } catch { return null; } },
+  set: (t) => { try { t ? sessionStorage.setItem(TOKEN_KEY, t) : sessionStorage.removeItem(TOKEN_KEY); } catch {} },
 };
 
 export class ApiError extends Error {
@@ -20,13 +23,15 @@ export async function api(path, { method = 'GET', body, params } = {}) {
       if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
     }
   }
-  const headers = { 'Content-Type': 'application/json' };
+  // A Blob (e.g. a voice recording) is sent as-is with its own type; anything else as JSON.
+  const isBlob = typeof Blob !== 'undefined' && body instanceof Blob;
+  const headers = { 'Content-Type': isBlob ? body.type || 'application/octet-stream' : 'application/json' };
   const token = tokenStore.get();
   if (token) headers.Authorization = `Bearer ${token}`;
 
   let res;
   try {
-    res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    res = await fetch(url, { method, headers, body: isBlob ? body : body ? JSON.stringify(body) : undefined });
   } catch {
     throw new ApiError(0, "Can't reach the server. Is the backend running?");
   }
@@ -41,6 +46,23 @@ export const metres = (m) => (m == null ? '' : m < 1000 ? `${m} m` : `${(m / 100
 
 /** About 80 m per minute walking. */
 export const walkMins = (m) => Math.max(1, Math.round(m / 80));
+
+/** '22:00' -> '10:00 pm' */
+export const fmtTime = (hhmm) => {
+  if (!hhmm) return '';
+  const [h, m] = hhmm.split(':').map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'am' : 'pm'}`;
+};
+
+/** Short status for a shop's opening hours, from the server's `reserve` info. */
+export function hoursLabel(shop) {
+  const r = shop?.reserve;
+  if (!r) return `Open ${fmtTime(shop.opens_at)} – ${fmtTime(shop.closes_at)}`;
+  if (!r.open) return `Closed · opens ${fmtTime(shop.opens_at)}`;
+  if (r.closesInMin == null) return 'Open 24 hours';
+  if (r.closingSoon) return `Closing in ${r.closesInMin} min`;
+  return `Open · closes ${fmtTime(shop.closes_at)}`;
+}
 
 export const CATEGORY_EMOJI = {
   Dairy: '🥛',

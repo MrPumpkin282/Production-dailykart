@@ -28,7 +28,7 @@ export default function LocationModal() {
   const useGps = async () => { if (await locate()) close(); };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-ink/40 p-4 pt-20" onClick={loc ? close : undefined}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-shade/40 p-4 pt-20" onClick={loc ? close : undefined}>
       <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-2xl border border-cream-line bg-cream p-5 shadow-pop">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-bold">Where are you?</h2>
